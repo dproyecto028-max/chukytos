@@ -22,8 +22,93 @@ salesCartPanel.innerHTML = '<div class="panel-head"><div><h3>Carrito de venta</h
 $('#sales .sales-summary').after(salesCartPanel);
 const quickSaleBar = document.createElement('div');
 quickSaleBar.className = 'quick-sale-bar';
-quickSaleBar.innerHTML = '<div><strong>Armar carrito</strong><small>Ingresá código y cantidad; presioná Enter para sumar</small></div><input id="quickBarcode" placeholder="Código de barras" inputmode="numeric"><span id="quickProductInfo" class="quick-product-info">Producto pendiente</span><input id="quickQuantity" type="number" min="1" value="1" aria-label="Cantidad"><button class="primary" id="quickAddBtn" type="button">Enter</button>';
+quickSaleBar.innerHTML = '<div><strong>Armar carrito</strong><small>Escaneá o escribí el código y la cantidad</small></div><input id="quickBarcode" placeholder="Código de barras" inputmode="numeric" autocomplete="off"><span id="quickProductInfo" class="quick-product-info">Producto pendiente</span><input id="quickQuantity" type="number" min="1" value="1" aria-label="Cantidad"><button class="primary" id="quickAddBtn" type="button">Enter</button><button class="outline" id="quickCameraBtn" type="button">Escanear con cámara</button>';
 salesCartPanel.before(quickSaleBar);
+
+const quickCameraModal = document.createElement('div');
+quickCameraModal.className = 'camera-scan-modal';
+quickCameraModal.innerHTML = '<div class="camera-scan-panel"><div class="camera-scan-header"><strong>Escaneo por cámara</strong><button type="button" id="closeCameraScan" class="close-camera-scan">×</button></div><video id="cameraScannerVideo" autoplay playsinline muted></video><p id="cameraScanStatus">Ajustá la cámara sobre el código de barras.</p></div>';
+document.body.appendChild(quickCameraModal);
+
+let quickCameraStream = null;
+let quickCameraLoop = null;
+
+function stopQuickCamera() {
+  if (quickCameraLoop) { clearInterval(quickCameraLoop); quickCameraLoop = null; }
+  if (quickCameraStream) {
+    quickCameraStream.getTracks().forEach(track => track.stop());
+    quickCameraStream = null;
+  }
+  const video = $('#cameraScannerVideo');
+  if (video) video.srcObject = null;
+  quickCameraModal.classList.remove('open');
+}
+
+async function openQuickCameraScanner() {
+  const quickBarcode = $('#quickBarcode');
+  if (!quickBarcode) return;
+  const status = $('#cameraScanStatus');
+  const video = $('#cameraScannerVideo');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    status.textContent = 'Tu navegador no admite acceso a cámara.';
+    quickCameraModal.classList.add('open');
+    return;
+  }
+  if (!('BarcodeDetector' in window)) {
+    status.textContent = 'Tu navegador no soporta escaneo por cámara. Podés escribir o usar un escáner externo.';
+    quickCameraModal.classList.add('open');
+    return;
+  }
+  try {
+    quickCameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    video.srcObject = quickCameraStream;
+    await video.play();
+    quickCameraModal.classList.add('open');
+    status.textContent = 'Escaneando... mantén el código dentro del cuadro.';
+    const detector = new BarcodeDetector({ formats: ['code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'] });
+    quickCameraLoop = setInterval(async () => {
+      if (!quickCameraModal.classList.contains('open')) return;
+      try {
+        const barcodes = await detector.detect(video);
+        const found = barcodes.find(item => item.rawValue && item.rawValue.trim());
+        if (!found) return;
+        const code = String(found.rawValue).trim().replace(/\s+/g, '');
+        if (!code) return;
+        quickBarcode.value = code;
+        stopQuickCamera();
+        addQuickSaleLine();
+      } catch (error) {
+        status.textContent = 'No se pudo leer el código. Ajustá la cámara y probá otra vez.';
+      }
+    }, 500);
+  } catch (error) {
+    status.textContent = 'No se pudo acceder a la cámara. Permití el uso y probá nuevamente.';
+    quickCameraModal.classList.add('open');
+  }
+}
+
+function focusQuickBarcode() {
+  const quickBarcode = $('#quickBarcode');
+  if (!quickBarcode) return;
+  setTimeout(() => {
+    quickBarcode.focus();
+    quickBarcode.select();
+  }, 80);
+}
+let quickBarcodeTimer = null;
+function submitQuickBarcodeIfReady() {
+  const quickBarcode = $('#quickBarcode');
+  if (!quickBarcode) return;
+  const value = quickBarcode.value.trim().replace(/\s+/g, '');
+  if (!value) return;
+  clearTimeout(quickBarcodeTimer);
+  quickBarcodeTimer = setTimeout(() => {
+    const current = $('#quickBarcode')?.value.trim().replace(/\s+/g, '');
+    if (current && current === value && !$('#quickAddBtn').disabled) {
+      addQuickSaleLine();
+    }
+  }, 180);
+}
 const calculator = document.createElement('aside');
 calculator.className = 'sales-calculator';
 calculator.innerHTML = '<div class="calculator-head"><div><strong>Calculadora</strong><small>Operación rápida</small></div><button type="button" id="clearCalculator">C</button></div><input id="calculatorDisplay" value="0" readonly><div class="calculator-grid"><button data-calc="7">7</button><button data-calc="8">8</button><button data-calc="9">9</button><button data-calc="/">÷</button><button data-calc="4">4</button><button data-calc="5">5</button><button data-calc="6">6</button><button data-calc="*">×</button><button data-calc="1">1</button><button data-calc="2">2</button><button data-calc="3">3</button><button data-calc="-">−</button><button data-calc="0">0</button><button data-calc=".">.</button><button data-calc="=">=</button><button data-calc="+">+</button></div></aside>';
@@ -60,7 +145,7 @@ function renderInventory() { const term = ($('#inventorySearch')?.value || '').t
 function renderDashboard() { const low = products.filter(p => p.status === 'low'); const totalStock = products.reduce((sum, p) => sum + Number(p.stock || 0), 0); $('#lowStockBody').innerHTML = low.slice(0, 4).map(p => productRow(p, true)).join(''); $('#expiryPreview').innerHTML = expiries.slice(0, 3).map(e => `<div class="expiry-item"><div class="expiry-date"><strong>${e[3].split(' ')[0]}</strong><small>días</small></div><div><p>${e[0]}</p><small>Vence el ${e[2]} · ${e[4]} en stock</small></div></div>`).join(''); $('#stockMetric').textContent = totalStock.toLocaleString('es-AR'); $('#lowStockMetric').textContent = low.length ? `${low.length} necesitan reposición` : 'Sin alertas de stock'; $('#expiryMetric').textContent = `${expiries.length} lotes`; }
 function renderSales() { const term = ($('#salesSearch')?.value || '').toLowerCase(); const visibleSales = sales.filter(row => row.join(' ').toLowerCase().includes(term)); $('#salesBody').innerHTML = visibleSales.map(row => `<tr><td><strong>${row[0]}</strong></td><td>${row[1]}</td><td>${row[2]}</td><td><strong>${row[3]}</strong></td><td>${row[4]}</td><td><span class="badge ok">${row[5]}</span></td></tr>`).join(''); const total = sales.reduce((sum, row) => sum + Number(String(row[3]).replace(/[^0-9,-]/g, '').replace('.', '').replace(',', '.') || 0), 0); const mercado = sales.filter(row => row[4] === 'Mercado Pago').length; $('#periodSalesMetric').textContent = money(total); $('#transactionsMetric').textContent = sales.length; $('#mercadoPagoMetric').textContent = sales.length ? `${Math.round(mercado / sales.length * 100)}%` : '0%'; }
 function renderExpiry() { $('#expiryBody').innerHTML = expiries.map(e => `<tr><td><strong>${e[0]}</strong></td><td>${e[1]}</td><td>${e[2]}</td><td><span class="badge ${parseInt(e[3]) < 7 ? 'danger' : 'warn'}">${e[3]}</span></td><td>${e[4]}</td><td><button class="text-btn">Ver lote →</button></td></tr>`).join(''); }
-function openView(id) { document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id)); document.querySelectorAll('.nav button[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === id)); const titles = {dashboard:'Buenos días, equipo', inventory:'Inventario', sales:'Ventas', expiry:'Control de vencimientos', integrations:'Integraciones'}; $('#pageTitle').textContent = titles[id] || 'Buenos días, equipo'; if (id === 'inventory') { renderInventory(); syncInventoryFromSheet(); } if (id === 'sales') { renderSales(); syncSalesFromSheet(); } }
+function openView(id) { document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id)); document.querySelectorAll('.nav button[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === id)); const titles = {dashboard:'Buenos días, equipo', inventory:'Inventario', sales:'Ventas', expiry:'Control de vencimientos', integrations:'Integraciones'}; $('#pageTitle').textContent = titles[id] || 'Buenos días, equipo'; if (id === 'inventory') { renderInventory(); syncInventoryFromSheet(); } if (id === 'sales') { renderSales(); syncSalesFromSheet(); focusQuickBarcode(); } }
 let lookupRequestId = 0;
 async function lookupPrice() { const requestId = ++lookupRequestId; const code = $('#barcodeInput').value.trim(); const normalizedCode = code.replace(/\s+/g, ''); const result = $('#priceResult'); if (!normalizedCode) { result.hidden = false; result.innerHTML = '<span>Ingresá un código de barras.</span><strong>!</strong>'; return false; } let found = products.find(product => String(product.code).replace(/\s+/g, '') === normalizedCode); const selling = !$('#saleDetails').hidden; const needsSheetData = !found || (selling && (!Array.isArray(found.lots) || !found.lots.length)); if (needsSheetData && apiToken) { result.hidden = false; result.innerHTML = '<span>Consultando catálogo y lotes...</span><strong>...</strong>'; await syncInventoryFromSheet(); if (requestId !== lookupRequestId || $('#barcodeInput').value.trim().replace(/\s+/g, '') !== normalizedCode) return false; found = products.find(product => String(product.code).replace(/\s+/g, '') === normalizedCode); } if (requestId !== lookupRequestId) return false; result.hidden = false; if (found) { result.innerHTML = `<span>${found.icon} ${found.name}</span><strong>${money(found.price)}</strong>`; $('#descriptionInput').value = found.name; $('#descriptionInput').readOnly = selling; $('#saleInput').value = found.price; $('#salePrice').value = found.price; updateSaleTotal(); return true; } $('#descriptionInput').value = ''; $('#descriptionInput').readOnly = false; result.innerHTML = '<span>Código no encontrado en Google Sheets</span><strong>--</strong>'; return false; }
 function updateSaleTotal() { const qty = parseInt($('#saleQty').value) || 0; const price = parseFloat($('#salePrice').value) || 0; $('#saleTotal').textContent = money(qty * price); }
@@ -111,9 +196,10 @@ function closeModal() { modal.classList.remove('open'); }
 document.querySelectorAll('.nav button[data-view]').forEach(btn => btn.addEventListener('click', () => openView(btn.dataset.view)));
 document.querySelectorAll('[data-go]').forEach(btn => btn.addEventListener('click', () => openView(btn.dataset.go)));
 $('#inventorySearch').addEventListener('input', renderInventory); $('#stockFilter').addEventListener('change', renderInventory); $('#salesSearch').addEventListener('input', renderSales);
-$('#barcodeInput').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); if (!$('#saleDetails').hidden) addManualSaleLine(); else lookupPrice(); } }); manualBarcodeBtn.addEventListener('click', addManualSaleLine); $('#saleQty').addEventListener('input', updateSaleTotal); $('#salePrice').addEventListener('input', updateSaleTotal);
-$('#quickBarcode').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); addQuickSaleLine(); } }); $('#quickAddBtn').addEventListener('click', addQuickSaleLine);
-$('#openScan').addEventListener('click', () => openModal()); $('#openSale').addEventListener('click', () => { closeModal(); openView('sales'); salesCartPanel.hidden = false; $('#quickBarcode').focus(); }); cartButton.addEventListener('click', () => { closeModal(); openView('sales'); salesCartPanel.hidden = false; $('#quickBarcode').focus(); }); $('#continueSaleBtn').addEventListener('click', () => { closeModal(); $('#quickBarcode').focus(); }); $('#finishSaleViewBtn').addEventListener('click', () => $('#confirmSale').click()); $('#scanNav').addEventListener('click', () => openModal()); $('#closeModal').addEventListener('click', closeModal); $('#cancelModal').addEventListener('click', closeModal); modal.addEventListener('click', event => { if (event.target === modal) closeModal(); });
+$('#barcodeInput').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === 'Tab' || event.key === 'NumpadEnter') { event.preventDefault(); if (!$('#saleDetails').hidden) addManualSaleLine(); else lookupPrice(); } }); manualBarcodeBtn.addEventListener('click', addManualSaleLine); $('#saleQty').addEventListener('input', updateSaleTotal); $('#salePrice').addEventListener('input', updateSaleTotal);
+$('#quickBarcode').addEventListener('input', submitQuickBarcodeIfReady);
+$('#quickBarcode').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === 'Tab' || event.key === 'NumpadEnter') { event.preventDefault(); addQuickSaleLine(); } }); $('#quickAddBtn').addEventListener('click', addQuickSaleLine); $('#quickCameraBtn').addEventListener('click', openQuickCameraScanner); $('#closeCameraScan').addEventListener('click', stopQuickCamera); quickCameraModal.addEventListener('click', event => { if (event.target === quickCameraModal) stopQuickCamera(); });
+$('#openScan').addEventListener('click', () => openModal()); $('#openSale').addEventListener('click', () => { closeModal(); openView('sales'); salesCartPanel.hidden = false; focusQuickBarcode(); }); cartButton.addEventListener('click', () => { closeModal(); openView('sales'); salesCartPanel.hidden = false; focusQuickBarcode(); }); $('#continueSaleBtn').addEventListener('click', () => { closeModal(); focusQuickBarcode(); }); $('#finishSaleViewBtn').addEventListener('click', () => $('#confirmSale').click()); $('#scanNav').addEventListener('click', () => openModal()); $('#closeModal').addEventListener('click', closeModal); $('#cancelModal').addEventListener('click', closeModal); modal.addEventListener('click', event => { if (event.target === modal) closeModal(); });
 $('#confirmScan').addEventListener('click', async event => { const barcode = $('#barcodeInput').value.trim(); const description = $('#descriptionInput').value.trim(); const category = $('#categoryInput').value.trim(); const quantity = Number($('#quantityInput').value); const minimum = Number($('#minimumInput').value); const cost = Number($('#costInput').value); const salePrice = Number($('#saleInput').value); const expiry = $('#expiryInput').value; if (!barcode || !description || !category || quantity < 1 || minimum < 0 || cost < 0 || salePrice < 0 || !expiry) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = '<span>Completá código, descripción, categoría, stock mínimo, cantidad, precios y vencimiento.</span><strong>!</strong>'; return; } event.target.disabled = true; event.target.textContent = 'Guardando...'; try { const response = await fetch(apiUrl, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({action:'stockEntry', token:apiToken, lot:{barcode:barcode, description:description, category:category, quantity:quantity, minimum:minimum, cost:cost, salePrice:salePrice, expiry:expiry}, user:sessionStorage.getItem('chukytosSeller') || ''})}); const result = await response.json(); if (!result.ok) throw new Error(result.error || 'No se pudo guardar la mercadería.'); closeModal(); await syncInventoryFromSheet(); } catch (error) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = `<span>${error.message}</span><strong>!</strong>`; } finally { event.target.disabled = false; event.target.textContent = 'Guardar mercadería'; } });
 $('#confirmSale').addEventListener('click', async event => { if (!saleCart.length) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = '<span>Agregá al menos un producto al carrito.</span><strong>!</strong>'; return; } event.target.disabled = true; event.target.textContent = 'Registrando...'; try { const payload = {action:'registerSale', token:apiToken, sale:{seller:sessionStorage.getItem('chukytosSeller') || '', paymentMethod:$('#paymentMethod').value, paymentStatus:'ABONADO', lines:saleCart.map(item => ({lotId:item.lotId, quantity:item.quantity, unitPrice:item.price}))}}; const response = await fetch(apiUrl, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(payload)}); const result = await response.json(); if (!result.ok) throw new Error(result.error || 'No se pudo registrar la venta.'); saleCart.splice(0, saleCart.length); renderSaleCart(); closeModal(); await syncInventoryFromSheet(); openView('sales'); } catch (error) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = `<span>${error.message}</span><strong>!</strong>`; } finally { event.target.disabled = false; event.target.textContent = 'Registrar pago'; } });
 let registerMode = false;
