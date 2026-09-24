@@ -32,6 +32,8 @@ document.body.appendChild(quickCameraModal);
 
 let quickCameraStream = null;
 let quickCameraLoop = null;
+let activeBarcodeScannerTarget = null;
+let activeBarcodeScannerCallback = null;
 
 function stopQuickCamera() {
   if (quickCameraLoop) { clearInterval(quickCameraLoop); quickCameraLoop = null; }
@@ -41,12 +43,14 @@ function stopQuickCamera() {
   }
   const video = $('#cameraScannerVideo');
   if (video) video.srcObject = null;
+  activeBarcodeScannerTarget = null;
+  activeBarcodeScannerCallback = null;
   quickCameraModal.classList.remove('open');
 }
 
-async function openQuickCameraScanner() {
-  const quickBarcode = $('#quickBarcode');
-  if (!quickBarcode) return;
+async function openQuickCameraScanner(targetInput = $('#quickBarcode'), callback = addQuickSaleLine) {
+  activeBarcodeScannerTarget = targetInput;
+  activeBarcodeScannerCallback = callback;
   const status = $('#cameraScanStatus');
   const video = $('#cameraScannerVideo');
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -74,9 +78,13 @@ async function openQuickCameraScanner() {
         if (!found) return;
         const code = String(found.rawValue).trim().replace(/\s+/g, '');
         if (!code) return;
-        quickBarcode.value = code;
+        const targetField = activeBarcodeScannerTarget;
+        const onScan = activeBarcodeScannerCallback;
         stopQuickCamera();
-        addQuickSaleLine();
+        if (targetField) targetField.value = code;
+        if (typeof onScan === 'function') {
+          setTimeout(() => onScan(), 0);
+        }
       } catch (error) {
         status.textContent = 'No se pudo leer el código. Ajustá la cámara y probá otra vez.';
       }
@@ -198,7 +206,8 @@ document.querySelectorAll('[data-go]').forEach(btn => btn.addEventListener('clic
 $('#inventorySearch').addEventListener('input', renderInventory); $('#stockFilter').addEventListener('change', renderInventory); $('#salesSearch').addEventListener('input', renderSales);
 $('#barcodeInput').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === 'Tab' || event.key === 'NumpadEnter') { event.preventDefault(); if (!$('#saleDetails').hidden) addManualSaleLine(); else lookupPrice(); } }); manualBarcodeBtn.addEventListener('click', addManualSaleLine); $('#saleQty').addEventListener('input', updateSaleTotal); $('#salePrice').addEventListener('input', updateSaleTotal);
 $('#quickBarcode').addEventListener('input', submitQuickBarcodeIfReady);
-$('#quickBarcode').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === 'Tab' || event.key === 'NumpadEnter') { event.preventDefault(); addQuickSaleLine(); } }); $('#quickAddBtn').addEventListener('click', addQuickSaleLine); $('#quickCameraBtn').addEventListener('click', openQuickCameraScanner); $('#closeCameraScan').addEventListener('click', stopQuickCamera); quickCameraModal.addEventListener('click', event => { if (event.target === quickCameraModal) stopQuickCamera(); });
+$('#quickBarcode').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === 'Tab' || event.key === 'NumpadEnter') { event.preventDefault(); addQuickSaleLine(); } }); $('#quickAddBtn').addEventListener('click', addQuickSaleLine); $('#quickCameraBtn').addEventListener('click', () => openQuickCameraScanner($('#quickBarcode'), addQuickSaleLine)); $('#closeCameraScan').addEventListener('click', stopQuickCamera); quickCameraModal.addEventListener('click', event => { if (event.target === quickCameraModal) stopQuickCamera(); });
+$('#openInventoryCameraBtn').addEventListener('click', () => openQuickCameraScanner($('#barcodeInput'), async () => { await lookupPrice(); }));
 $('#openScan').addEventListener('click', () => openModal()); $('#openSale').addEventListener('click', () => { closeModal(); openView('sales'); salesCartPanel.hidden = false; focusQuickBarcode(); }); cartButton.addEventListener('click', () => { closeModal(); openView('sales'); salesCartPanel.hidden = false; focusQuickBarcode(); }); $('#continueSaleBtn').addEventListener('click', () => { closeModal(); focusQuickBarcode(); }); $('#finishSaleViewBtn').addEventListener('click', () => $('#confirmSale').click()); $('#scanNav').addEventListener('click', () => openModal()); $('#closeModal').addEventListener('click', closeModal); $('#cancelModal').addEventListener('click', closeModal); modal.addEventListener('click', event => { if (event.target === modal) closeModal(); });
 $('#confirmScan').addEventListener('click', async event => { const barcode = $('#barcodeInput').value.trim(); const description = $('#descriptionInput').value.trim(); const category = $('#categoryInput').value.trim(); const quantity = Number($('#quantityInput').value); const minimum = Number($('#minimumInput').value); const cost = Number($('#costInput').value); const salePrice = Number($('#saleInput').value); const expiry = $('#expiryInput').value; if (!barcode || !description || !category || quantity < 1 || minimum < 0 || cost < 0 || salePrice < 0 || !expiry) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = '<span>Completá código, descripción, categoría, stock mínimo, cantidad, precios y vencimiento.</span><strong>!</strong>'; return; } event.target.disabled = true; event.target.textContent = 'Guardando...'; try { const response = await fetch(apiUrl, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({action:'stockEntry', token:apiToken, lot:{barcode:barcode, description:description, category:category, quantity:quantity, minimum:minimum, cost:cost, salePrice:salePrice, expiry:expiry}, user:sessionStorage.getItem('chukytosSeller') || ''})}); const result = await response.json(); if (!result.ok) throw new Error(result.error || 'No se pudo guardar la mercadería.'); closeModal(); await syncInventoryFromSheet(); } catch (error) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = `<span>${error.message}</span><strong>!</strong>`; } finally { event.target.disabled = false; event.target.textContent = 'Guardar mercadería'; } });
 $('#confirmSale').addEventListener('click', async event => { if (!saleCart.length) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = '<span>Agregá al menos un producto al carrito.</span><strong>!</strong>'; return; } event.target.disabled = true; event.target.textContent = 'Registrando...'; try { const payload = {action:'registerSale', token:apiToken, sale:{seller:sessionStorage.getItem('chukytosSeller') || '', paymentMethod:$('#paymentMethod').value, paymentStatus:'ABONADO', lines:saleCart.map(item => ({lotId:item.lotId, quantity:item.quantity, unitPrice:item.price}))}}; const response = await fetch(apiUrl, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(payload)}); const result = await response.json(); if (!result.ok) throw new Error(result.error || 'No se pudo registrar la venta.'); saleCart.splice(0, saleCart.length); renderSaleCart(); closeModal(); await syncInventoryFromSheet(); openView('sales'); } catch (error) { $('#priceResult').hidden = false; $('#priceResult').innerHTML = `<span>${error.message}</span><strong>!</strong>`; } finally { event.target.disabled = false; event.target.textContent = 'Registrar pago'; } });
